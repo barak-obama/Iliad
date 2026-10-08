@@ -38,3 +38,8 @@ body.assist-side{margin-right:2rem;margin-left:auto}
 .assist-settings button{font:inherit;padding:.3rem .9rem;border:1px solid #c9b183;border-radius:.3rem;background:#fff;cursor:pointer}
 .assist-actions{display:flex;gap:.5rem;margin-top:1.2rem}
 .assist-settings .assist-save{background:#7a5c2e;border-color:#7a5c2e;color:#fff}
+.assist-prompt-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-top:.3rem;font-size:.85rem;color:#666}
+.assist-prompt-row .assist-reset{font-size:.85rem;padding:.15rem .6rem}
+.assist-reset[hidden]{display:none}
+.assist-hint{margin:.4rem 0 0;font-size:.8rem;color:#777}
+.assist-hint code{font-size:.95em;background:#f3ecdc;padding:0 .2em;border-radius:.2em}

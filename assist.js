@@ -3,26 +3,28 @@
   'use strict';
 
   // ---- Configuration -------------------------------------------------------
-  // The prompt sent to Claude. The selected text and its line range are appended after it.
-  const PROMPT = ``;
+  // Default prompt sent to Claude, used until one is saved in the settings dialog (⚙ button).
+  // The selected text and its line range are appended after it.
+  const DEFAULT_PROMPT = ``;
 
   const MODEL = 'claude-opus-5-5';
   const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.128.0/+esm';
   const MARKED_URL = 'https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js';
   const PURIFY_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.es.mjs';
   const KEY_STORAGE = 'iliad-assist.anthropic-key';
+  const PROMPT_STORAGE = 'iliad-assist.prompt';
   // Below this viewport width there is no room for a side panel, so the answer opens as a popup.
   const SIDE_PANEL_MIN_WIDTH = 1150;
 
-  // ---- API key -------------------------------------------------------------
-  function readKey() {
-    try { return localStorage.getItem(KEY_STORAGE) || ''; } catch { return ''; }
+  // ---- Stored settings (API key, prompt) -----------------------------------
+  function load(name) {
+    try { return localStorage.getItem(name); } catch { return null; }
   }
-  function askForKey() {
-    const key = (window.prompt('מפתח Anthropic API (נשמר בדפדפן זה בלבד):', readKey()) || '').trim();
-    if (key) { try { localStorage.setItem(KEY_STORAGE, key); } catch {} }
-    return key;
+  function store(name, value) {
+    try { localStorage.setItem(name, value); return true; } catch { return false; }
   }
+  const readKey = () => (load(KEY_STORAGE) || '').trim();
+  const readPrompt = () => load(PROMPT_STORAGE) ?? DEFAULT_PROMPT;
 
   // ---- Selection -> text + line range -------------------------------------
   function lineOf(node) {
@@ -78,7 +80,10 @@
   panel.innerHTML = `
     <div class="assist-head">
       <span class="assist-ref"></span>
-      <button type="button" class="assist-close" aria-label="סגור">×</button>
+      <span class="assist-head-buttons">
+        <button type="button" class="assist-gear" title="הגדרות Claude" aria-label="הגדרות Claude">⚙</button>
+        <button type="button" class="assist-close" aria-label="סגור">×</button>
+      </span>
     </div>
     <blockquote class="assist-quote"></blockquote>
     <div class="assist-body"></div>`;
@@ -89,13 +94,61 @@
   backdrop.hidden = true;
   document.body.appendChild(backdrop);
 
+  // Settings dialog, opened from the ⚙ button. Values are saved in this browser.
+  const settings = document.createElement('dialog');
+  settings.className = 'assist-settings';
+  settings.innerHTML = `
+    <form method="dialog">
+      <h2>הגדרות Claude</h2>
+      <label for="assist-prompt">הנחיה (הטקסט המסומן וטווח השורות יצורפו אחריה)</label>
+      <textarea id="assist-prompt" rows="8" dir="auto"></textarea>
+      <label for="assist-key">מפתח Anthropic API</label>
+      <div class="assist-key-row">
+        <input id="assist-key" type="password" dir="ltr" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+        <button type="button" class="assist-key-toggle">הצג</button>
+      </div>
+      <p class="assist-error assist-save-error" hidden>השמירה נכשלה (האחסון בדפדפן חסום).</p>
+      <div class="assist-actions">
+        <button type="submit" value="save" class="assist-save">שמור</button>
+        <button type="submit" value="cancel">ביטול</button>
+      </div>
+    </form>`;
+  document.body.appendChild(settings);
+
+  const promptInput = settings.querySelector('#assist-prompt');
+  const keyInput = settings.querySelector('#assist-key');
+  const keyToggle = settings.querySelector('.assist-key-toggle');
+  const saveError = settings.querySelector('.assist-save-error');
+
+  function setKeyVisible(show) {
+    keyInput.type = show ? 'text' : 'password';
+    keyToggle.textContent = show ? 'הסתר' : 'הצג';
+  }
+  keyToggle.addEventListener('click', () => setKeyVisible(keyInput.type === 'password'));
+
+  function openSettings(focus = promptInput) {
+    promptInput.value = readPrompt();
+    keyInput.value = readKey();
+    setKeyVisible(false);
+    saveError.hidden = true;
+    settings.showModal();
+    focus.focus();
+  }
+  settings.querySelector('form').addEventListener('submit', e => {
+    if (e.submitter?.value !== 'save') return;
+    const ok = store(PROMPT_STORAGE, promptInput.value) && store(KEY_STORAGE, keyInput.value.trim());
+    if (!ok) { e.preventDefault(); saveError.hidden = false; }
+  });
+
   const keyBtn = document.createElement('button');
   keyBtn.type = 'button';
   keyBtn.className = 'assist-key';
-  keyBtn.title = 'הגדרת מפתח API';
+  keyBtn.title = 'הגדרות Claude';
+  keyBtn.setAttribute('aria-label', 'הגדרות Claude');
   keyBtn.textContent = '⚙';
   document.body.appendChild(keyBtn);
-  keyBtn.addEventListener('click', askForKey);
+  keyBtn.addEventListener('click', () => openSettings());
+  panel.querySelector('.assist-gear').addEventListener('click', () => openSettings());
 
   const refEl = panel.querySelector('.assist-ref');
   const quoteEl = panel.querySelector('.assist-quote');
@@ -106,6 +159,8 @@
     document.body.classList.toggle('assist-side', side && !panel.hidden);
     panel.classList.toggle('as-popup', !side);
     backdrop.hidden = side || panel.hidden;
+    // The panel covers the corner button, so it uses the ⚙ in its own header instead.
+    keyBtn.hidden = !panel.hidden;
   }
   window.addEventListener('resize', layout);
 
@@ -146,7 +201,7 @@
   }
   panel.querySelector('.assist-close').addEventListener('click', closePanel);
   backdrop.addEventListener('click', closePanel);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !panel.hidden) closePanel(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !panel.hidden && !settings.open) closePanel(); });
 
   // ---- Rendering -----------------------------------------------------------
   let libs = null;
@@ -170,6 +225,16 @@
     bodyEl.appendChild(p);
   }
 
+  function showKeyMissing(text) {
+    showStatus(`${text} `, true);
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'assist-link';
+    link.textContent = 'פתח הגדרות';
+    link.addEventListener('click', () => openSettings(keyInput));
+    bodyEl.firstChild.appendChild(link);
+  }
+
   // ---- Claude call ---------------------------------------------------------
   let activeStream = null;
 
@@ -182,11 +247,11 @@
     layout();
     panel.scrollTop = 0;
 
-    const apiKey = readKey() || askForKey();
-    if (!apiKey) { showStatus('נדרש מפתח Anthropic API (כפתור ⚙).', true); return; }
+    const apiKey = readKey();
+    if (!apiKey) { showKeyMissing('נדרש מפתח Anthropic API.'); return; }
 
     showStatus('חושב…');
-    const message = [PROMPT.trim(), text, ref].filter(Boolean).join('\n\n');
+    const message = [readPrompt().trim(), text, ref].filter(Boolean).join('\n\n');
 
     let lib;
     try {
@@ -228,8 +293,7 @@
     } catch (err) {
       if (activeStream !== stream || stream.aborted) return;
       if (err instanceof lib.Anthropic.AuthenticationError) {
-        try { localStorage.removeItem(KEY_STORAGE); } catch {}
-        showStatus('מפתח ה-API נדחה. הגדר מפתח חדש (כפתור ⚙).', true);
+        showKeyMissing('מפתח ה-API נדחה.');
       } else if (err instanceof lib.Anthropic.RateLimitError) {
         showStatus('חריגה ממגבלת הקצב. נסה שוב בעוד רגע.', true);
       } else if (err instanceof lib.Anthropic.APIError) {

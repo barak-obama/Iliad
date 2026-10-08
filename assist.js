@@ -3,9 +3,11 @@
   'use strict';
 
   // ---- Configuration -------------------------------------------------------
-  // Default prompt sent to Claude, used until one is saved in the settings dialog (⚙ button).
-  // The selected text and its line range are appended after it.
-  const DEFAULT_PROMPT = ``;
+  // The prompt sent to Claude is default_prompt.md, until a different one is saved in the settings
+  // dialog (⚙ button). Placeholders {text}, {book}, {start}, {end} and {ref} are filled from the
+  // selection; a prompt without {text} gets the selected text and "{book}: lines {start} - {end}"
+  // appended after it.
+  const DEFAULT_PROMPT_URL = 'default_prompt.md';
 
   const MODEL = 'claude-opus-5-5';
   const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.128.0/+esm';
@@ -23,8 +25,25 @@
   function store(name, value) {
     try { localStorage.setItem(name, value); return true; } catch { return false; }
   }
+  function remove(name) {
+    try { localStorage.removeItem(name); return true; } catch { return false; }
+  }
   const readKey = () => (load(KEY_STORAGE) || '').trim();
-  const readPrompt = () => load(PROMPT_STORAGE) ?? DEFAULT_PROMPT;
+
+  // Resolves to the text of default_prompt.md, or null if it can't be fetched (e.g. the page was
+  // opened as a local file:// rather than served over http).
+  const defaultPrompt = fetch(DEFAULT_PROMPT_URL, { cache: 'no-cache' })
+    .then(r => (r.ok ? r.text() : null))
+    .then(t => (t == null ? null : t.replace(/\r\n/g, '\n').trim()))
+    .catch(() => null);
+  const readPrompt = async () => load(PROMPT_STORAGE) ?? (await defaultPrompt) ?? '';
+
+  function buildMessage(prompt, { text, book, start, end, ref }) {
+    prompt = prompt.trim();
+    if (!prompt.includes('{text}')) return [prompt, text, ref].filter(Boolean).join('\n\n');
+    const values = { text, book, start, end, ref };
+    return prompt.replace(/\{(text|book|start|end|ref)\}/g, (_, k) => values[k]);
+  }
 
   // ---- Selection -> text + line range -------------------------------------
   function lineOf(node) {
@@ -60,8 +79,9 @@
     const first = lines[0], last = lines[lines.length - 1];
     const book = first.closest('section.book')?.dataset.book;
     if (!book) return null;
-    const ref = `${book}: lines ${first.dataset.line} - ${last.dataset.line}`;
-    return { text, ref, range };
+    const start = first.dataset.line, end = last.dataset.line;
+    const ref = `${book}: lines ${start} - ${end}`;
+    return { text, book, start, end, ref, range };
   }
 
   // ---- UI ------------------------------------------------------------------
@@ -100,8 +120,13 @@
   settings.innerHTML = `
     <form method="dialog">
       <h2>הגדרות Claude</h2>
-      <label for="assist-prompt">הנחיה (הטקסט המסומן וטווח השורות יצורפו אחריה)</label>
-      <textarea id="assist-prompt" rows="8" dir="auto"></textarea>
+      <label for="assist-prompt">הנחיה</label>
+      <textarea id="assist-prompt" rows="12" dir="rtl"></textarea>
+      <div class="assist-prompt-row">
+        <span class="assist-prompt-state"></span>
+        <button type="button" class="assist-reset">שחזר ברירת מחדל</button>
+      </div>
+      <p class="assist-hint">אפשר לשלב בהנחיה את <code dir="ltr">{text}</code> (הטקסט המסומן), <code dir="ltr">{book}</code>, <code dir="ltr">{start}</code> ו־<code dir="ltr">{end}</code>. בלי <code dir="ltr">{text}</code>, הטקסט וטווח השורות יצורפו בסוף.</p>
       <label for="assist-key">מפתח Anthropic API</label>
       <div class="assist-key-row">
         <input id="assist-key" type="password" dir="ltr" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
@@ -119,6 +144,28 @@
   const keyInput = settings.querySelector('#assist-key');
   const keyToggle = settings.querySelector('.assist-key-toggle');
   const saveError = settings.querySelector('.assist-save-error');
+  const promptState = settings.querySelector('.assist-prompt-state');
+  const resetBtn = settings.querySelector('.assist-reset');
+  let defaultText = null;
+
+  function showPromptState() {
+    if (defaultText == null) {
+      promptState.textContent = 'לא ניתן לטעון את default_prompt.md (יש לפתוח את העמוד דרך שרת, לא כקובץ מקומי).';
+      promptState.className = 'assist-prompt-state assist-error';
+      resetBtn.hidden = true;
+      return;
+    }
+    const isDefault = promptInput.value.trim() === defaultText;
+    promptState.textContent = isDefault ? 'ברירת המחדל (default_prompt.md)' : 'הנחיה מותאמת אישית';
+    promptState.className = 'assist-prompt-state';
+    resetBtn.hidden = isDefault;
+  }
+  promptInput.addEventListener('input', showPromptState);
+  resetBtn.addEventListener('click', () => {
+    promptInput.value = defaultText;
+    showPromptState();
+    promptInput.focus();
+  });
 
   function setKeyVisible(show) {
     keyInput.type = show ? 'text' : 'password';
@@ -126,8 +173,10 @@
   }
   keyToggle.addEventListener('click', () => setKeyVisible(keyInput.type === 'password'));
 
-  function openSettings(focus = promptInput) {
-    promptInput.value = readPrompt();
+  async function openSettings(focus = promptInput) {
+    defaultText = await defaultPrompt;
+    promptInput.value = await readPrompt();
+    showPromptState();
     keyInput.value = readKey();
     setKeyVisible(false);
     saveError.hidden = true;
@@ -136,7 +185,11 @@
   }
   settings.querySelector('form').addEventListener('submit', e => {
     if (e.submitter?.value !== 'save') return;
-    const ok = store(PROMPT_STORAGE, promptInput.value) && store(KEY_STORAGE, keyInput.value.trim());
+    // A prompt equal to the default is not stored, so later edits to default_prompt.md apply.
+    const promptOk = defaultText != null && promptInput.value.trim() === defaultText
+      ? remove(PROMPT_STORAGE)
+      : store(PROMPT_STORAGE, promptInput.value);
+    const ok = promptOk && store(KEY_STORAGE, keyInput.value.trim());
     if (!ok) { e.preventDefault(); saveError.hidden = false; }
   });
 
@@ -238,7 +291,8 @@
   // ---- Claude call ---------------------------------------------------------
   let activeStream = null;
 
-  async function ask({ text, ref }) {
+  async function ask(selection) {
+    const { text, ref } = selection;
     if (activeStream) { activeStream.abort(); activeStream = null; }
 
     refEl.textContent = ref;
@@ -251,7 +305,7 @@
     if (!apiKey) { showKeyMissing('נדרש מפתח Anthropic API.'); return; }
 
     showStatus('חושב…');
-    const message = [readPrompt().trim(), text, ref].filter(Boolean).join('\n\n');
+    const message = buildMessage(await readPrompt(), selection);
 
     let lib;
     try {
